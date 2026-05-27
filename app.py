@@ -1,24 +1,14 @@
 import json
-from datetime import datetime, date, time, timedelta
-from zoneinfo import ZoneInfo
-
-import pandas as pd
-import altair as alt
-import streamlit as st
-
-# -----------------------------
-# CONFIG
+from datetime import datetime, date, time
+from zoneinfo import Zone CONFIGfrom zoneinfo import ZoneInfo
 # -----------------------------
 st.set_page_config(page_title="Tipping Comp", page_icon="🏉", layout="wide")
 
 TZ = ZoneInfo("Pacific/Auckland")
 STORE_FILE = "tipping.json"
 
-DEFAULT_PLAYERS = [
-    "Player 1", "Player 2", "Player 3", "Player 4", "Player 5",
-    "Player 6", "Player 7", "Player 8", "Player 9", "Player 10",
-    "Player 11", "Player 12", "Player 13", "Player 14", "Player 15",
-]
+# Initial players (as requested)
+DEFAULT_PLAYERS = ["moody", "coops", "dan"]
 
 DEFAULT_STATE = {
     "players": DEFAULT_PLAYERS,
@@ -27,7 +17,7 @@ DEFAULT_STATE = {
     "rounds": {},              # round_name -> round object
 }
 
-# Optional Admin PIN via Streamlit secrets (recommended way to store secrets) [1](https://docs.streamlit.io/develop/api-reference/connections/st.secrets)[2](https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/secrets-management)
+# Optional Admin PIN via Streamlit secrets (Streamlit Cloud -> App -> Settings -> Secrets)
 ADMIN_PIN = ""
 try:
     ADMIN_PIN = str(st.secrets.get("ADMIN_PIN", "")).strip()
@@ -35,7 +25,7 @@ except Exception:
     ADMIN_PIN = ""
 
 # -----------------------------
-# STYLE (simple, clean)
+# STYLE
 # -----------------------------
 st.markdown(
     """
@@ -112,6 +102,9 @@ def parse_iso(iso_str):
     except Exception:
         return None
 
+def norm_text(s: str) -> str:
+    return " ".join((s or "").strip().lower().split())
+
 def compute_initials(name):
     parts = [p for p in name.strip().split() if p]
     if not parts:
@@ -135,7 +128,6 @@ def round_multiplier(round_obj):
         return 1.0
 
 def round_locked(round_obj):
-    # Locked if finalized or deadline passed
     if bool(round_obj.get("finalized", False)):
         return True
     dl = round_deadline(round_obj)
@@ -172,13 +164,14 @@ def donut_or_zero(val, show_donut):
 #   "games": [
 #       {
 #         "id": "R1G1",
-#         "label": "Chiefs vs Blues" (or any question),
+#         "label": "Chiefs vs Blues" OR "Who will win Tour de France?",
 #         "points": 1,
-#         "options": [{"key":"A","label":"Chiefs"}, {"key":"B","label":"Blues"}] or 3 options
+#         "type": "choice" or "text",
+#         "options": [{"key":"A","label":"Chiefs"}, {"key":"B","label":"Blues"}] (2 or 3 options)   # only for type=choice
 #       }
 #   ],
-#   "results": {game_id: option_key or "" },
-#   "tips": {player: {game_id: option_key or ""}},
+#   "results": {game_id: option_key OR free text},
+#   "tips": {player: {game_id: option_key OR free text}},
 #   "double_up": {player: game_id or ""}  # per round
 # }
 
@@ -191,7 +184,6 @@ def load_state():
     except Exception:
         s = {}
 
-    # merge defaults
     for k, v in DEFAULT_STATE.items():
         if k not in s:
             s[k] = v if not isinstance(v, list) else list(v)
@@ -226,46 +218,51 @@ def load_state():
         if not isinstance(r["double_up"], dict):
             r["double_up"] = {}
 
-        # normalize games
         fixed_games = []
         for i, g in enumerate(r["games"]):
             if not isinstance(g, dict):
                 continue
             gid = str(g.get("id") or f"{rn.replace(' ','')}G{i+1}")
-            label = str(g.get("label") or f"Game {i+1}")
+            label = str(g.get("label") or f"Question {i+1}")
             try:
                 pts = int(g.get("points", 1))
             except Exception:
                 pts = 1
-            options = g.get("options", [])
-            if not isinstance(options, list) or len(options) not in (2, 3):
-                # default to 2-way placeholder
-                options = [{"key": "A", "label": "Option A"}, {"key": "B", "label": "Option B"}]
-            # ensure option schema
-            norm_opts = []
-            for j, o in enumerate(options):
-                if not isinstance(o, dict):
-                    continue
-                k = str(o.get("key") or chr(65 + j))
-                lab = str(o.get("label") or f"Option {k}")
-                norm_opts.append({"key": k, "label": lab})
-            if len(norm_opts) not in (2, 3):
-                norm_opts = [{"key": "A", "label": "Option A"}, {"key": "B", "label": "Option B"}]
-            fixed_games.append({"id": gid, "label": label, "points": pts, "options": norm_opts})
-            r["results"].setdefault(gid, "")
+
+            gtype = g.get("type", "choice")
+            if gtype not in ("choice", "text"):
+                gtype = "choice"
+
+            if gtype == "text":
+                fixed_games.append({"id": gid, "label": label, "points": pts, "type": "text"})
+                r["results"].setdefault(gid, "")
+            else:
+                options = g.get("options", [])
+                if not isinstance(options, list) or len(options) not in (2, 3):
+                    options = [{"key": "A", "label": "Option A"}, {"key": "B", "label": "Option B"}]
+
+                norm_opts = []
+                for j, o in enumerate(options):
+                    if not isinstance(o, dict):
+                        continue
+                    k = str(o.get("key") or chr(65 + j))
+                    lab = str(o.get("label") or f"Option {k}")
+                    norm_opts.append({"key": k, "label": lab})
+                if len(norm_opts) not in (2, 3):
+                    norm_opts = [{"key": "A", "label": "Option A"}, {"key": "B", "label": "Option B"}]
+
+                fixed_games.append({"id": gid, "label": label, "points": pts, "type": "choice", "options": norm_opts})
+                r["results"].setdefault(gid, "")
 
         r["games"] = fixed_games
 
-        # ensure tips/double_up exist for all players
         for p in s["players"]:
             r["tips"].setdefault(p, {})
             if not isinstance(r["tips"][p], dict):
                 r["tips"][p] = {}
             r["double_up"].setdefault(p, "")
 
-    # choose current_round if empty
     if not s.get("current_round"):
-        # prefer latest non-finalized
         non_final = [rn for rn in s["rounds"].keys() if not bool(s["rounds"][rn].get("finalized", False))]
         s["current_round"] = non_final[-1] if non_final else (list(s["rounds"].keys())[-1] if s["rounds"] else "")
 
@@ -280,8 +277,8 @@ def save_state(state):
 # -----------------------------
 def calc_all_scores(state):
     players = state["players"]
-    totals = {p: 0.0 for p in players}          # total points overall
-    round_points = {p: {} for p in players}     # points per round
+    totals = {p: 0.0 for p in players}
+    round_points = {p: {} for p in players}
     correct = {p: 0 for p in players}
     decided = {p: 0 for p in players}
 
@@ -293,7 +290,6 @@ def calc_all_scores(state):
         du = r.get("double_up", {})
         du_enabled = bool(r.get("double_up_enabled", False))
 
-        # map game_id -> points
         pts_map = {g["id"]: int(g.get("points", 1)) for g in games}
 
         for p in players:
@@ -308,7 +304,14 @@ def calc_all_scores(state):
                     continue  # not decided
                 decided[p] += 1
                 pick = p_tips.get(gid, "")
-                if pick and pick == res:
+
+                is_correct = False
+                if g.get("type") == "text":
+                    is_correct = norm_text(pick) != "" and norm_text(pick) == norm_text(res)
+                else:
+                    is_correct = pick and pick == res
+
+                if is_correct:
                     correct[p] += 1
                     base = pts_map.get(gid, 1) * mult
                     if p_du_game == gid:
@@ -432,28 +435,36 @@ if page == "🏁 Current Round":
         left, right = st.columns([2, 1])
 
         with left:
-            st.markdown("#### Games")
+            st.markdown("#### Questions / Games")
             if not games:
-                st.info("No games/questions added yet.")
+                st.info("No questions added yet.")
             else:
                 rows = []
                 for g in games:
                     gid = g["id"]
                     pts = int(g.get("points", 1))
-                    opt_txt = " / ".join([o["label"] for o in g["options"]])
-                    res_key = results.get(gid, "")
-                    res_label = next((o["label"] for o in g["options"] if o["key"] == res_key), "—")
+                    gtype = g.get("type", "choice")
+                    res_val = results.get(gid, "")
+                    if gtype == "text":
+                        opt_txt = "Open text"
+                        res_label = res_val.strip() if res_val else "—"
+                    else:
+                        opt_txt = " / ".join([o["label"] for o in g["options"]])
+                        res_label = next((o["label"] for o in g["options"] if o["key"] == res_val), "—")
+                        if not res_val:
+                            res_label = "—"
+
                     rows.append({
                         "Question": g["label"],
+                        "Type": "1 answer (text)" if gtype == "text" else f"{len(g['options'])} outcomes",
                         "Options": opt_txt,
                         "Points": pts,
-                        "Result": res_label if res_key else "—",
+                        "Result": res_label,
                     })
                 st.dataframe(pd.DataFrame(rows), use_container_width=True, height=420)
 
         with right:
             st.markdown("#### Round snapshot")
-            # Show a small per-player table for this round, with donut if finalized and 0
             if players:
                 data_rows = []
                 for p in players:
@@ -492,17 +503,16 @@ elif page == "📝 Enter Tips":
         st.success("Round is OPEN — enter your tips below.")
 
     if not games:
-        st.info("No games/questions have been added for this round.")
+        st.info("No questions have been added for this round.")
         st.stop()
 
     player = st.session_state.auth_player
     p_tips = r["tips"].get(player, {})
     p_du = r["double_up"].get(player, "")
 
-    st.markdown('<div class="small">Each question has 2 or 3 outcomes. Pick one. If Double‑Up is enabled, choose one question to double.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="small">Questions can be either open text (1 answer) or choice (2/3 outcomes). If Double‑Up is enabled, choose one question to double.</div>', unsafe_allow_html=True)
     st.write("")
 
-    # build choice lists for double-up
     du_choices = ["— none —"] + [g["id"] for g in games]
     def du_fmt(gid):
         if gid == "— none —":
@@ -512,25 +522,39 @@ elif page == "📝 Enter Tips":
 
     with st.form("tips_form"):
         updated_tips = {}
+
         for g in games:
             gid = g["id"]
-            options = [""] + [o["key"] for o in g["options"]]
-            label_map = {"": "— no pick —"}
-            for o in g["options"]:
-                label_map[o["key"]] = o["label"]
+            pts = int(g.get("points", 1))
+            gtype = g.get("type", "choice")
 
-            current = p_tips.get(gid, "")
-            idx = options.index(current) if current in options else 0
+            if gtype == "text":
+                current = p_tips.get(gid, "")
+                ans = st.text_input(
+                    f"{g['label']}  •  ({pts} pts)  •  (type your answer)",
+                    value=current,
+                    disabled=locked,
+                    key=f"texttip_{current_round}_{player}_{gid}",
+                )
+                updated_tips[gid] = ans
+            else:
+                options = [""] + [o["key"] for o in g["options"]]
+                label_map = {"": "— no pick —"}
+                for o in g["options"]:
+                    label_map[o["key"]] = o["label"]
 
-            choice = st.selectbox(
-                f"{g['label']}  •  ({int(g.get('points', 1))} pts)",
-                options=options,
-                index=idx,
-                format_func=lambda x: label_map.get(x, x),
-                disabled=locked,
-                key=f"tip_{current_round}_{player}_{gid}",
-            )
-            updated_tips[gid] = choice
+                current = p_tips.get(gid, "")
+                idx = options.index(current) if current in options else 0
+
+                choice = st.selectbox(
+                    f"{g['label']}  •  ({pts} pts)",
+                    options=options,
+                    index=idx,
+                    format_func=lambda x: label_map.get(x, x),
+                    disabled=locked,
+                    key=f"choicetip_{current_round}_{player}_{gid}",
+                )
+                updated_tips[gid] = choice
 
         st.divider()
         if du_enabled:
@@ -549,21 +573,34 @@ elif page == "📝 Enter Tips":
         submitted = st.form_submit_button("Save tips", disabled=locked)
 
     if submitted:
-        # Save tips
         r["tips"].setdefault(player, {})
-        for gid, pick in updated_tips.items():
-            if pick:
-                r["tips"][player][gid] = pick
-            else:
-                r["tips"][player].pop(gid, None)
 
-        # Save double-up (validate: must have a pick on that game)
+        # Save tips
+        for gid, pick in updated_tips.items():
+            g = next((x for x in games if x["id"] == gid), None)
+            if not g:
+                continue
+
+            if g.get("type") == "text":
+                # keep free text; allow empty to clear
+                if norm_text(pick):
+                    r["tips"][player][gid] = pick.strip()
+                else:
+                    r["tips"][player].pop(gid, None)
+            else:
+                if pick:
+                    r["tips"][player][gid] = pick
+                else:
+                    r["tips"][player].pop(gid, None)
+
+        # Save double-up (validate: must have a non-empty tip on that question)
         if du_enabled:
             if du_sel == "— none —":
                 r["double_up"][player] = ""
             else:
-                if not r["tips"][player].get(du_sel):
-                    st.error("To use Double‑Up, you must also select a tip for that question.")
+                tip_val = r["tips"][player].get(du_sel, "")
+                if not norm_text(str(tip_val)):
+                    st.error("To use Double‑Up, you must also enter a tip for that question.")
                     save_state(state)
                     st.stop()
                 r["double_up"][player] = du_sel
@@ -586,7 +623,6 @@ elif page == "🏆 Leaderboard":
     if not rnames:
         st.info("No rounds yet.")
     else:
-        # show donut for finalized rounds with zero
         rp = pd.DataFrame({"Player": players})
         for rn in rnames:
             finalized = bool(state["rounds"][rn].get("finalized", False))
@@ -596,10 +632,8 @@ elif page == "🏆 Leaderboard":
                 col_vals.append(donut_or_zero(pts, finalized))
             rp[rn] = col_vals
 
-        # total (numeric) for sorting
         rp["_TotalNumeric"] = [round(float(totals[p]), 1) for p in players]
         rp["Total"] = rp["_TotalNumeric"].astype(str)
-
         rp = rp.sort_values("_TotalNumeric", ascending=False).drop(columns=["_TotalNumeric"]).reset_index(drop=True)
         st.dataframe(rp, use_container_width=True)
 
@@ -614,7 +648,6 @@ elif page == "📊 Stats":
 
     rnames = list(state["rounds"].keys())
 
-    # timeseries of totals
     rows = []
     for p in players:
         running = 0.0
@@ -652,14 +685,12 @@ elif page == "📊 Stats":
 elif page == "✅ Admin":
     st.markdown("### ✅ Admin")
 
-    # Optional PIN gate
     if ADMIN_PIN:
         pin = st.text_input("Admin PIN", type="password")
         if pin.strip() != ADMIN_PIN:
             st.warning("Enter the correct Admin PIN to use admin tools.")
             st.stop()
 
-    # --- Current round selector ---
     st.markdown("#### Current round control")
     all_rounds = list(state["rounds"].keys())
     colA, colB = st.columns([2, 1])
@@ -687,9 +718,7 @@ elif page == "✅ Admin":
 
     st.divider()
 
-    # --- Create / edit round ---
     st.markdown("#### Create / edit round settings")
-
     new_round_name = st.text_input("Round name (new or existing)", placeholder="e.g., Round 5")
 
     dcol1, dcol2, dcol3, dcol4 = st.columns([1, 1, 1, 1])
@@ -722,7 +751,6 @@ elif page == "✅ Admin":
             r["multiplier"] = float(mult)
             r["double_up_enabled"] = bool(du_enabled)
 
-            # ensure player structures exist
             for p in state["players"]:
                 r["tips"].setdefault(p, {})
                 r["double_up"].setdefault(p, "")
@@ -733,8 +761,7 @@ elif page == "✅ Admin":
 
     st.divider()
 
-    # --- Manage games/questions ---
-    st.markdown("#### Add question/game (2-outcome or 3-outcome)")
+    st.markdown("#### Add question/game (1 answer OR 2/3 outcomes)")
     if not state["rounds"]:
         st.info("Create a round first.")
         st.stop()
@@ -749,25 +776,29 @@ elif page == "✅ Admin":
 
     gcol1, gcol2 = st.columns([2, 1])
     with gcol1:
-        q_label = st.text_input("Question / match label", placeholder="e.g., Chiefs vs Blues OR Liverpool vs Arsenal")
+        q_label = st.text_input("Question / match label", placeholder="e.g., Chiefs vs Blues OR Who will win Tour de France?")
     with gcol2:
         pts = st.number_input("Points", min_value=1, max_value=100, value=1, step=1)
 
     mode = st.selectbox(
-        "Outcome type",
-        ["2 outcomes (A/B)", "3 outcomes (A/Draw/B)"],
-        index=0
+        "Question type",
+        ["1 answer (open text)", "2 outcomes (A/B)", "3 outcomes (A/Draw/B)"],
+        index=1
     )
 
-    # Labels for options
-    if mode.startswith("2"):
+    game_obj = None
+
+    if mode.startswith("1"):
+        game_obj = {"type": "text"}
+        st.info("Players will type a free-text answer. Admin also types the correct answer in Results.")
+    elif mode.startswith("2"):
         o1, o2 = st.columns(2)
         with o1:
             optA = st.text_input("Option A label", value="Home / Team A")
         with o2:
             optB = st.text_input("Option B label", value="Away / Team B")
-        options = [{"key": "A", "label": optA.strip() or "Option A"},
-                   {"key": "B", "label": optB.strip() or "Option B"}]
+        game_obj = {"type": "choice", "options": [{"key": "A", "label": optA.strip() or "Option A"},
+                                                  {"key": "B", "label": optB.strip() or "Option B"}]}
     else:
         o1, o2, o3 = st.columns(3)
         with o1:
@@ -776,16 +807,18 @@ elif page == "✅ Admin":
             optD = st.text_input("Draw label", value="Draw")
         with o3:
             optB = st.text_input("Option B label", value="Away")
-        options = [{"key": "A", "label": optA.strip() or "A"},
-                   {"key": "D", "label": optD.strip() or "Draw"},
-                   {"key": "B", "label": optB.strip() or "B"}]
+        game_obj = {"type": "choice", "options": [{"key": "A", "label": optA.strip() or "A"},
+                                                  {"key": "D", "label": optD.strip() or "Draw"},
+                                                  {"key": "B", "label": optB.strip() or "B"}]}
 
     if st.button("Add question/game"):
         if not q_label.strip():
             st.warning("Enter a label for the question/game.")
         else:
             gid = f"{rn.replace(' ','')}G{len(r['games'])+1}"
-            r["games"].append({"id": gid, "label": q_label.strip(), "points": int(pts), "options": options})
+            base = {"id": gid, "label": q_label.strip(), "points": int(pts)}
+            base.update(game_obj)
+            r["games"].append(base)
             r["results"][gid] = ""
             for p in state["players"]:
                 r["tips"].setdefault(p, {})
@@ -803,7 +836,10 @@ elif page == "✅ Admin":
             c1, c2, c3 = st.columns([4, 1, 1])
             with c1:
                 st.write(f"**{g['label']}**")
-                st.caption("Options: " + " / ".join([o["label"] for o in g["options"]]))
+                if g.get("type") == "text":
+                    st.caption("Type: 1 answer (open text)")
+                else:
+                    st.caption("Options: " + " / ".join([o["label"] for o in g["options"]]))
             with c2:
                 st.write(f"{int(g.get('points',1))} pts")
             with c3:
@@ -813,7 +849,6 @@ elif page == "✅ Admin":
                     r["results"].pop(gid, None)
                     for p in state["players"]:
                         r["tips"].get(p, {}).pop(gid, None)
-                        # if their double-up pointed to this game, clear it
                         if r["double_up"].get(p) == gid:
                             r["double_up"][p] = ""
                     save_state(state)
@@ -821,7 +856,6 @@ elif page == "✅ Admin":
 
     st.divider()
 
-    # --- Enter results ---
     st.markdown("#### Enter results")
     if not r["games"]:
         st.info("Add games first.")
@@ -831,33 +865,36 @@ elif page == "✅ Admin":
             for g in r["games"]:
                 gid = g["id"]
                 current = r["results"].get(gid, "")
-                opts = [""] + [o["key"] for o in g["options"]]
-                label_map = {"": "— no result —"}
-                for o in g["options"]:
-                    label_map[o["key"]] = o["label"]
-                idx = opts.index(current) if current in opts else 0
-                choice = st.selectbox(
-                    f"Result: {g['label']}",
-                    options=opts,
-                    index=idx,
-                    format_func=lambda x: label_map.get(x, x),
-                    key=f"res_{rn}_{gid}",
-                )
-                updates[gid] = choice
+                if g.get("type") == "text":
+                    val = st.text_input(f"Result (text): {g['label']}", value=current, key=f"res_text_{rn}_{gid}")
+                    updates[gid] = val
+                else:
+                    opts = [""] + [o["key"] for o in g["options"]]
+                    label_map = {"": "— no result —"}
+                    for o in g["options"]:
+                        label_map[o["key"]] = o["label"]
+                    idx = opts.index(current) if current in opts else 0
+                    choice = st.selectbox(
+                        f"Result: {g['label']}",
+                        options=opts,
+                        index=idx,
+                        format_func=lambda x: label_map.get(x, x),
+                        key=f"res_choice_{rn}_{gid}",
+                    )
+                    updates[gid] = choice
             save_btn = st.form_submit_button("Save results")
 
         if save_btn:
             for gid, res in updates.items():
-                r["results"][gid] = res
+                r["results"][gid] = res.strip() if isinstance(res, str) else res
             save_state(state)
             st.success("Saved results.")
             st.rerun()
 
     st.divider()
 
-    # --- Players admin (add/remove/rename + passwords) ---
     st.markdown("#### Players & passwords")
-    st.markdown('<div class="small">Default password is initials (e.g., John Moody → JM). You can override.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="small">Default password is initials (e.g., John Moody → JM). You can override. Add-player behaviour unchanged.</div>', unsafe_allow_html=True)
 
     pcol1, pcol2 = st.columns(2)
     with pcol1:
@@ -899,7 +936,6 @@ elif page == "✅ Admin":
             st.warning("That name already exists.")
         else:
             state["players"] = [new_name if p == old_name else p for p in state["players"]]
-            # move tips & double_up across all rounds
             for rr in state["rounds"].values():
                 if old_name in rr["tips"]:
                     rr["tips"][new_name] = rr["tips"].pop(old_name)
@@ -931,6 +967,11 @@ elif page == "✅ Admin":
         st.dataframe(pd.DataFrame(rows), use_container_width=True)
 
     st.divider()
-
     export = json.dumps(state, indent=2).encode("utf-8")
     st.download_button("Download backup JSON", data=export, file_name="tipping_export.json", mime="application/json")
+
+import pandas as pd
+import altair as alt
+import streamlit as st
+
+# -----------------------------
