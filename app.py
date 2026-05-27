@@ -744,4 +744,7 @@ elif tab == "📊 Stats":
     rp = rp.sort_values("Total", ascending=False).reset_index(drop=True)
     st.dataframe(rp, use_container_width=True)
 
-    st.markdown('<div class="small">Tips lock at the round close-off time (not per game). Admin sets game points and the round multiplier.</div>', unsafe_allow_html=True) games. Once kickoff has passed (NZ time), picks disable automatically.</div>', unsafe_allow_html=True)
+
+st.markdown(
+    '<div class="small">Tips lock at the round close-off time. Admin sets game points and the round multiplier.</div>',
+    unsafe_allow_html=True
