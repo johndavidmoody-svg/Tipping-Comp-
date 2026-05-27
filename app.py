@@ -1,6 +1,13 @@
 import json
 from datetime import datetime, date, time
-from zoneinfo import Zone CONFIGfrom zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo
+
+import pandas as pd
+import altair as alt
+import streamlit as st
+
+# -----------------------------
+# CONFIG
 # -----------------------------
 st.set_page_config(page_title="Tipping Comp", page_icon="🏉", layout="wide")
 
@@ -17,7 +24,7 @@ DEFAULT_STATE = {
     "rounds": {},              # round_name -> round object
 }
 
-# Optional Admin PIN via Streamlit secrets (Streamlit Cloud -> App -> Settings -> Secrets)
+# Optional Admin PIN via Streamlit secrets (Streamlit Cloud -> App -> Settings -> Secrets) [1](https://docs.streamlit.io/develop/api-reference/connections/st.secrets)[2](https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/secrets-management)
 ADMIN_PIN = ""
 try:
     ADMIN_PIN = str(st.secrets.get("ADMIN_PIN", "")).strip()
@@ -332,6 +339,7 @@ def accuracy_pct(corr, dec):
 state = load_state()
 players = state["players"]
 
+# Session state for login [3](https://docs.streamlit.io/develop/api-reference/caching-and-state/st.session_state)
 if "auth_player" not in st.session_state:
     st.session_state.auth_player = None
 
@@ -465,13 +473,48 @@ if page == "🏁 Current Round":
 
         with right:
             st.markdown("#### Round snapshot")
+
             if players:
                 data_rows = []
+                tipped = []
+                not_tipped = []
+
                 for p in players:
+                    tips = r["tips"].get(p, {})
+                    complete = True
+                    for g in games:
+                        gid = g["id"]
+                        val = tips.get(gid, "")
+                        if g.get("type") == "text":
+                            if not val or str(val).strip() == "":
+                                complete = False
+                                break
+                        else:
+                            if not val:
+                                complete = False
+                                break
+
                     pts = round(float(rp_map.get(p, {}).get(current_round, 0.0)), 1)
-                    data_rows.append({"Player": p, "Round Points": donut_or_zero(pts, finalized), "Total": round(totals[p], 1)})
+                    data_rows.append({
+                        "Player": p,
+                        "Round Points": donut_or_zero(pts, finalized),
+                        "Total": round(totals[p], 1),
+                    })
+
+                    (tipped if complete else not_tipped).append(p)
+
                 df = pd.DataFrame(data_rows).sort_values("Total", ascending=False)
-                st.dataframe(df, use_container_width=True, height=420)
+                st.dataframe(df, use_container_width=True, height=260)
+
+                st.divider()
+                st.markdown("#### 🟢 Tipped")
+                st.write(", ".join(tipped) if tipped else "None yet")
+
+                st.markdown("#### 🔴 Still to tip")
+                if not_tipped:
+                    st.write(", ".join(not_tipped))
+                else:
+                    st.success("Everyone has tipped ✅")
             else:
                 st.info("No players yet.")
 
@@ -575,16 +618,14 @@ elif page == "📝 Enter Tips":
     if submitted:
         r["tips"].setdefault(player, {})
 
-        # Save tips
         for gid, pick in updated_tips.items():
             g = next((x for x in games if x["id"] == gid), None)
             if not g:
                 continue
 
             if g.get("type") == "text":
-                # keep free text; allow empty to clear
                 if norm_text(pick):
-                    r["tips"][player][gid] = pick.strip()
+                    r["tips"][player][gid] = str(pick).strip()
                 else:
                     r["tips"][player].pop(gid, None)
             else:
@@ -593,7 +634,6 @@ elif page == "📝 Enter Tips":
                 else:
                     r["tips"][player].pop(gid, None)
 
-        # Save double-up (validate: must have a non-empty tip on that question)
         if du_enabled:
             if du_sel == "— none —":
                 r["double_up"][player] = ""
@@ -626,11 +666,7 @@ elif page == "🏆 Leaderboard":
         rp = pd.DataFrame({"Player": players})
         for rn in rnames:
             finalized = bool(state["rounds"][rn].get("finalized", False))
-            col_vals = []
-            for p in players:
-                pts = round(float(rp_map.get(p, {}).get(rn, 0.0)), 1)
-                col_vals.append(donut_or_zero(pts, finalized))
-            rp[rn] = col_vals
+            rp[rn] = [donut_or_zero(round(float(rp_map.get(p, {}).get(rn, 0.0)), 1), finalized) for p in players]
 
         rp["_TotalNumeric"] = [round(float(totals[p]), 1) for p in players]
         rp["Total"] = rp["_TotalNumeric"].astype(str)
@@ -969,9 +1005,3 @@ elif page == "✅ Admin":
     st.divider()
     export = json.dumps(state, indent=2).encode("utf-8")
     st.download_button("Download backup JSON", data=export, file_name="tipping_export.json", mime="application/json")
-
-import pandas as pd
-import altair as alt
-import streamlit as st
-
-# -----------------------------
