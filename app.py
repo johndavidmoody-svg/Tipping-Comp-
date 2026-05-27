@@ -687,7 +687,7 @@ elif tab == "📊 Stats":
         st.markdown("#### Accuracy vs points")
         scatter_df = leader_df.copy()
         scatter = alt.Chart(scatter_df).mark_circle(size=140).encode(
-            x=alt.X", scale=alt.Scale(domain=[0, 100])),
+x=alt.X("Accuracy %:Q", scale=alt.Scale(domain=[0, 100])),
             y="Points:Q",
             color="Player:N",
             tooltip=["Player", "Points", "Accuracy %", "Correct", "Decided", "Perfect Rounds"],
