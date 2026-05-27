@@ -745,6 +745,4 @@ elif tab == "📊 Stats":
     st.dataframe(rp, use_container_width=True)
 
 
-st.markdown(
-    '<div class="small">Tips lock at the round close-off time. Admin sets game points and the round multiplier.</div>',
-    unsafe_allow_html=True
+st.markdown('<div class="small">Tips lock at the round close-off time. Admin sets game points and the round multiplier.</div>', unsafe_allow_html
